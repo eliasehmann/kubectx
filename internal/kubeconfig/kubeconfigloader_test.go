@@ -147,3 +147,104 @@ func TestStandardKubeconfigLoader_multipleFiles_loadsAll(t *testing.T) {
 		f.Close()
 	}
 }
+
+func TestStandardKubeconfigLoader_duplicatePaths_loadsOnce(t *testing.T) {
+	dir := t.TempDir()
+	f1 := filepath.Join(dir, "config1")
+	f2 := filepath.Join(dir, "config2")
+	for _, f := range []string{f1, f2} {
+		if err := os.WriteFile(f, []byte("apiVersion: v1\nkind: Config\ncontexts: []\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	path := strings.Join([]string{f1, f2, f1}, string(os.PathListSeparator))
+	t.Setenv("KUBECONFIG", path)
+
+	files, err := new(StandardKubeconfigLoader).Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}()
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+	for i, want := range []string{f1, f2} {
+		if got := files[i].(PathHinter).Path(); got != want {
+			t.Errorf("file %d: got path %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestStandardKubeconfigLoader_symlinkToLoadedFile_loadsOnce(t *testing.T) {
+	dir := t.TempDir()
+	f1 := filepath.Join(dir, "config1")
+	link := filepath.Join(dir, "link")
+	if err := os.WriteFile(f1, []byte("apiVersion: v1\nkind: Config\ncontexts: []\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(f1, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	path := strings.Join([]string{f1, link}, string(os.PathListSeparator))
+	t.Setenv("KUBECONFIG", path)
+
+	files, err := new(StandardKubeconfigLoader).Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}()
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+}
+
+// A kubeconfig listed twice in KUBECONFIG used to be written twice on Save():
+// the second, unmodified copy overwrote the change made through the first.
+func TestStandardKubeconfigLoader_duplicatePaths_changeIsSaved(t *testing.T) {
+	dir := t.TempDir()
+	f1 := filepath.Join(dir, "config1")
+	content := "apiVersion: v1\nkind: Config\ncontexts:\n- name: a\n- name: b\ncurrent-context: a\n"
+	if err := os.WriteFile(f1, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	path := strings.Join([]string{f1, f1}, string(os.PathListSeparator))
+	t.Setenv("KUBECONFIG", path)
+
+	kc := new(Kubeconfig).WithLoader(DefaultLoader)
+	if err := kc.Parse(); err != nil {
+		t.Fatal(err)
+	}
+	if err := kc.ModifyCurrentContext("b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := kc.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := kc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	kc = new(Kubeconfig).WithLoader(DefaultLoader)
+	if err := kc.Parse(); err != nil {
+		t.Fatal(err)
+	}
+	defer kc.Close()
+	got, err := kc.GetCurrentContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "b" {
+		t.Fatalf("current-context after save: got %q, want %q", got, "b")
+	}
+}

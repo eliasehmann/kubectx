@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/ahmetb/kubectx/internal/cmdutil"
 )
@@ -43,6 +44,7 @@ func (*StandardKubeconfigLoader) Load() ([]ReadWriteResetCloser, error) {
 	}
 
 	var files []ReadWriteResetCloser
+	var loaded []os.FileInfo
 	for _, p := range paths {
 		f, err := os.OpenFile(p, os.O_RDWR, 0)
 		if err != nil {
@@ -51,6 +53,19 @@ func (*StandardKubeconfigLoader) Load() ([]ReadWriteResetCloser, error) {
 			}
 			return nil, fmt.Errorf("failed to open file %q: %w", p, err)
 		}
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("failed to stat file %q: %w", p, err)
+		}
+		// Load each file only once, even if KUBECONFIG lists it more than once
+		// (or through a symlink). Otherwise Save() would write the file once
+		// per entry, and the later, unmodified copy would overwrite the change.
+		if slices.ContainsFunc(loaded, func(o os.FileInfo) bool { return os.SameFile(o, fi) }) {
+			f.Close()
+			continue
+		}
+		loaded = append(loaded, fi)
 		files = append(files, &kubeconfigFile{File: f, path: p})
 	}
 	if len(files) == 0 {

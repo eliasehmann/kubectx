@@ -205,8 +205,11 @@ func (k *Kubeconfig) Save() error {
 		if err := k.files[i].f.Reset(); err != nil {
 			return fmt.Errorf("failed to reset file %d: %w", i, err)
 		}
-		enc := yaml.NewEncoder(k.files[i].f)
-		enc.SetIndent(0)
+		// Write the layout kubectl uses (2 spaces, list items not indented),
+		// so that saving does not re-indent the whole file.
+		enc := yaml.NewEncoderWithOptions(k.files[i].f, &yaml.EncoderOptions{
+			SeqIndent: yaml.CompactSequenceStyle,
+		})
 		if err := enc.Encode(k.files[i].config.YNode()); err != nil {
 			return fmt.Errorf("failed to encode file %d: %w", i, err)
 		}

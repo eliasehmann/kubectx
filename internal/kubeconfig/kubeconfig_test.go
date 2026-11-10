@@ -15,6 +15,7 @@
 package kubeconfig
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -62,6 +63,53 @@ func TestSave(t *testing.T) {
 	}
 	expected := "a: [1, 2, 3]\ncurrent-context: hello\n"
 	if diff := cmp.Diff(expected, test.Output()); diff != "" {
+		t.Fatal(diff)
+	}
+}
+
+// Saving must keep the layout kubectl writes (2 spaces, list items not
+// indented), so that only the modified field shows up as a change.
+func TestSave_keepsKubectlIndentation(t *testing.T) {
+	const tmpl = `apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: eHh4
+    server: https://10.0.0.1:6443
+  name: c1
+contexts:
+- context:
+    cluster: c1
+    user: u1
+  name: ctx1
+- context:
+    cluster: c1
+    user: u1
+  name: ctx2
+current-context: %s
+kind: Config
+preferences: {}
+users:
+- name: u1
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      args:
+      - get-token
+      command: auth
+`
+	test := WithMockKubeconfigLoader(fmt.Sprintf(tmpl, "ctx1"))
+	kc := new(Kubeconfig).WithLoader(test)
+	defer kc.Close()
+	if err := kc.Parse(); err != nil {
+		t.Fatal(err)
+	}
+	if err := kc.ModifyCurrentContext("ctx2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := kc.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(fmt.Sprintf(tmpl, "ctx2"), test.Output()); diff != "" {
 		t.Fatal(diff)
 	}
 }
